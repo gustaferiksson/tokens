@@ -215,10 +215,10 @@ const main = async (): Promise<void> => {
     const blockStart = await blockStartP
 
     const repoName = git?.repo ?? (basename(cwd) || homeRel(cwd))
-    const parts: string[] = []
-    let header = `[${cyan(repoName)}]`
+    let header = cyan(repoName)
     if (git?.subpath) header += ` ${git.subpath}`
-    parts.push(header)
+
+    const parts: string[] = [header]
 
     if (git?.branch) {
         const flags: string[] = []
@@ -227,7 +227,7 @@ const main = async (): Promise<void> => {
         if (git.staged > 0) flags.push(green(`+${git.staged}`))
         if (git.modified > 0) flags.push(yellow(`~${git.modified}`))
         if (git.untracked > 0) flags.push(dim(`?${git.untracked}`))
-        parts.push(flags.length ? `${git.branch} ${flags.join(" ")}` : git.branch)
+        parts.push(flags.length ? `${git.branch}${dim(" : ")}${flags.join(" ")}` : git.branch)
     }
 
     if (blockStart !== undefined) {

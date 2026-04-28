@@ -92,11 +92,11 @@ tokens --json --month            # JSON output
 It prints one line, e.g.:
 
 ```
-[tokens] │ main ↑1 ~2 ?1 │ ▓▓▓░░░░░░░ 33% 3h 21m left
+tokens │ main : ↑1 ~2 ?1 │ ▓▓▓░░░░░░░ 33% 3h 21m left
 ```
 
-- **`[<repo>]`** — git repo name (cyan), with the relative subpath when you're inside a subdirectory. Falls back to the cwd basename if not in a git repo.
-- **branch + flags** — `<branch> ↑ahead ↓behind +staged ~modified ?untracked`. Each flag is omitted when zero. From a single `git status --porcelain=v2 --branch` call.
+- **repo** — git repo name (cyan), with the relative subpath when you're inside a subdirectory. Falls back to the cwd basename if not in a git repo.
+- **branch + flags** — `<branch> : ↑ahead ↓behind +staged ~modified ?untracked`. Each flag is omitted when zero (and the `:` separator with them). From a single `git status --porcelain=v2 --branch` call.
 - **session block** — Anthropic's rolling 5-hour usage window. `▓░` bar + percent of elapsed time + time until reset. Green / yellow / red at 65 / 85%. Block detection scans the last ~6h of `~/.claude/projects/*/**.jsonl` and follows ccusage's identification rules (hour-floored start, breaks on >5h gap or 5h cap).
 
 ## Notes
