@@ -66,6 +66,7 @@ const completionSpec: Fig.Spec = {
             },
         },
         { name: "--detailed", description: "One row per (date, project, model)" },
+        { name: "--blocks", description: "One row per Anthropic 5h session block" },
         { name: "--exact", description: "Show exact integer token counts (default: compact 1.2K)" },
         { name: "--json", description: "Emit JSON instead of a table" },
         { name: "--refresh-pricing", description: "Force refresh of cached pricing (TTL 7d)" },

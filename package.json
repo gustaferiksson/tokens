@@ -4,7 +4,8 @@
   "type": "module",
   "bin": {
     "tokens": "./src/index.ts",
-    "tokens-statusline": "./src/statusline.ts"
+    "tokens-statusline": "./src/statusline.ts",
+    "tokens-subagent-status": "./src/subagent-status.ts"
   },
   "scripts": {
     "lint": "biome check .",

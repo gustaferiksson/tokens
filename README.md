@@ -8,7 +8,7 @@ CLI tool that breaks down [Claude Code](https://claude.com/claude-code) usage fr
 git clone https://github.com/gustaferiksson/tokens.git
 cd tokens
 bun install
-bun link        # exposes `tokens` and `tokens-statusline` on $PATH
+bun link        # exposes `tokens`, `tokens-statusline`, `tokens-subagent-status` on $PATH
 ```
 
 Optional Fig autocomplete spec:
