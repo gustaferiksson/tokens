@@ -5,6 +5,7 @@ import { basename, join } from "node:path"
 export type UsageRecord = {
     project: string
     date: string // YYYY-MM-DD
+    timestamp: string // full ISO timestamp from the source line
     model: string
     input: number
     output: number
@@ -103,6 +104,7 @@ const parseLine = (line: string, project: string, seenIds: Set<string>): UsageRe
     return {
         project,
         date: timestamp.slice(0, 10),
+        timestamp,
         model,
         input: usage.input_tokens ?? 0,
         output: usage.output_tokens ?? 0,

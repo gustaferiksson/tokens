@@ -45,6 +45,7 @@ tokens [options]
 | `--project [filter]` | one per project; optional substring filter |
 | `--by-model [filter]` | adds a `Model` column; optional substring filter |
 | `--detailed` | one per (date, project, model) |
+| `--blocks` | one per Anthropic 5h session block; the active block is highlighted and its duration shows `(active)` |
 
 Project rows sort by total cost (descending). Date rows stay chronological.
 
@@ -74,6 +75,8 @@ tokens --project hub             # group by project + filter to "hub"
 tokens --by-model haiku          # group by model + filter to haiku
 tokens --detailed --month        # full (date, project, model) for this month
 tokens --json --month            # JSON output
+tokens --blocks --today          # today's 5h session blocks
+tokens --blocks --week -1        # last week's blocks
 ```
 
 ## Statusline

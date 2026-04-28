@@ -1,5 +1,6 @@
 #! /usr/bin/env bun
 
+import { type Block, identifyBlocks, isActiveBlock } from "./blocks"
 import { collectUsage, projectLabel, type UsageRecord } from "./parser"
 import { computeCost, findPricing, loadPricing, type ModelPricing } from "./pricing"
 import { type DateRange, inRange, type RangeSpec, resolveRange } from "./ranges"
@@ -9,6 +10,7 @@ type Args = {
     range: RangeSpec
     byProject: boolean
     byModel: boolean
+    byBlock: boolean
     detailed: boolean
     modelFilter?: string
     projectFilter?: string
@@ -37,6 +39,7 @@ GROUPING
   --project [filter]    Group by project; optional substring filter
   --by-model [filter]   Add a Model column; optional substring filter
   --detailed            One row per (date, project, model)
+  --blocks              One row per Anthropic 5h session block
 
 OUTPUT
   --exact               Show exact integer token counts (default: compact 1.2K)
@@ -51,6 +54,7 @@ const parseArgs = (argv: string[]): Args => {
         range,
         byProject: false,
         byModel: false,
+        byBlock: false,
         detailed: false,
         json: false,
         exact: false,
@@ -115,6 +119,9 @@ const parseArgs = (argv: string[]): Args => {
             }
             case "--detailed":
                 out.detailed = true
+                break
+            case "--blocks":
+                out.byBlock = true
                 break
             case "--json":
                 out.json = true
@@ -356,6 +363,156 @@ const renderTextTable = (
     return `${rangeLine}\n${pricingLine}\n${renderTable(allRows, columns)}${footer}`
 }
 
+type BlockAgg = {
+    start: Date
+    end: Date
+    lastActivity: Date
+    isActive: boolean
+    input: number
+    output: number
+    cacheWrite: number
+    cacheRead: number
+    cost: number
+    missingPricing: boolean
+    perModelCost: Map<string, number>
+}
+
+const aggregateBlock = (block: Block, pricing: Record<string, ModelPricing>, now: Date): BlockAgg => {
+    const agg: BlockAgg = {
+        start: block.start,
+        end: block.end,
+        lastActivity: block.lastActivity,
+        isActive: isActiveBlock(block, now),
+        input: 0,
+        output: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        cost: 0,
+        missingPricing: false,
+        perModelCost: new Map(),
+    }
+    for (const r of block.records) {
+        agg.input += r.input
+        agg.output += r.output
+        agg.cacheWrite += r.cacheWrite
+        agg.cacheRead += r.cacheRead
+        const p = findPricing(r.model, pricing)
+        let c = 0
+        if (p) {
+            c = computeCost(p, r)
+            agg.cost += c
+        } else {
+            agg.missingPricing = true
+        }
+        agg.perModelCost.set(r.model, (agg.perModelCost.get(r.model) ?? 0) + c)
+    }
+    return agg
+}
+
+const fmtBlockStart = (d: Date): string => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    const h = String(d.getHours()).padStart(2, "0")
+    return `${y}-${m}-${day} ${h}:00`
+}
+
+const fmtDuration = (ms: number): string => {
+    const total = Math.max(0, Math.round(ms / 60000))
+    const h = Math.floor(total / 60)
+    const m = total % 60
+    if (h === 0) return `${m}m`
+    return `${h}h ${String(m).padStart(2, "0")}m`
+}
+
+const renderBlocksTable = (
+    blocks: BlockAgg[],
+    range: DateRange,
+    bounds: { minDate?: string; maxDate?: string },
+    pricingFetchedAt: number,
+    exact: boolean,
+    now: Date
+): string => {
+    if (blocks.length === 0) return `No blocks in range: ${range.label}`
+
+    const fmtTok = exact ? fmtInt : fmtTokens
+
+    const totals: BlockAgg = {
+        start: blocks[0]?.start ?? now,
+        end: blocks[0]?.end ?? now,
+        lastActivity: blocks[0]?.lastActivity ?? now,
+        isActive: false,
+        input: 0,
+        output: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        cost: 0,
+        missingPricing: false,
+        perModelCost: new Map(),
+    }
+    for (const b of blocks) {
+        totals.input += b.input
+        totals.output += b.output
+        totals.cacheWrite += b.cacheWrite
+        totals.cacheRead += b.cacheRead
+        totals.cost += b.cost
+        totals.missingPricing ||= b.missingPricing
+        for (const [m, c] of b.perModelCost) {
+            totals.perModelCost.set(m, (totals.perModelCost.get(m) ?? 0) + c)
+        }
+    }
+
+    const splits = [...blocks, totals].map((r) => splitMainModel(r.perModelCost))
+    const nameW = Math.max(0, ...splits.map((s) => s.name.length))
+    const plusW = Math.max(0, ...splits.map((s) => s.plus.length))
+
+    const columns: Column<BlockAgg>[] = [
+        {
+            header: "Start",
+            get: (b) => (b === totals ? "TOTAL" : fmtBlockStart(b.start)),
+        },
+        {
+            header: "Duration",
+            get: (b) => {
+                if (b === totals) return ""
+                const endMs = b.isActive ? now.getTime() : b.lastActivity.getTime()
+                const dur = fmtDuration(endMs - b.start.getTime())
+                return b.isActive ? `${dur} (active)` : dur
+            },
+        },
+        {
+            header: "Main Model",
+            get: (b) => {
+                const s = splitMainModel(b.perModelCost)
+                if (plusW === 0) return s.name
+                return `${s.name.padEnd(nameW)} ${s.plus.padStart(plusW)}`
+            },
+        },
+        { header: "Input", align: "right", get: (b) => fmtTok(b.input) },
+        { header: "Output", align: "right", get: (b) => fmtTok(b.output) },
+        { header: "Cache Wr", align: "right", get: (b) => fmtTok(b.cacheWrite) },
+        { header: "Cache Rd", align: "right", get: (b) => fmtTok(b.cacheRead) },
+        {
+            header: "Cost (USD)",
+            align: "right",
+            get: (b) => (b.missingPricing ? `${fmtUsd(b.cost)}*` : fmtUsd(b.cost)),
+        },
+    ]
+
+    const dataRows: Row<BlockAgg>[] = blocks.map((b) => (b.isActive ? { highlight: b } : b))
+    const allRows: Row<BlockAgg>[] = [...dataRows, "separator", { highlight: totals }]
+
+    const from = range.from ?? bounds.minDate
+    const to = range.to ?? bounds.maxDate
+    const isoStr = from && to ? (from === to ? from : `${from} → ${to}`) : (from ?? to)
+    const rangeLine = `Range: ${range.label}${isoStr ? `  ${gray(`(${isoStr})`)}` : ""}`
+    const pricingLine = gray(`Pricing cached ${humanizeAge(Date.now() - pricingFetchedAt)} ago`)
+    const footer = blocks.some((b) => b.missingPricing) ? "\n* cost incomplete: pricing missing for some model(s)" : ""
+    const blockLine = gray(`Block: 5h rolling window, hour-aligned`)
+
+    return `${rangeLine}\n${blockLine}\n${pricingLine}\n${renderTable(allRows, columns)}${footer}`
+}
+
 const main = async (): Promise<void> => {
     let args: Args
     try {
@@ -379,8 +536,51 @@ const main = async (): Promise<void> => {
         process.exit(2)
     }
 
-    const axes = axesFromArgs(args)
     const [pricing, records] = await Promise.all([loadPricing(args.refreshPricing), collectUsage()])
+
+    if (args.byBlock) {
+        const now = new Date()
+        let filtered = records
+        if (args.modelFilter) filtered = filtered.filter((r) => r.model.includes(args.modelFilter ?? ""))
+        if (args.projectFilter)
+            filtered = filtered.filter((r) => projectLabel(r.project).includes(args.projectFilter ?? ""))
+
+        const allBlocks = identifyBlocks(filtered)
+            .filter((b) => inRange(b.start.toISOString().slice(0, 10), range))
+            .map((b) => aggregateBlock(b, pricing.models, now))
+
+        let minDate: string | undefined
+        let maxDate: string | undefined
+        for (const b of allBlocks) {
+            const d = b.start.toISOString().slice(0, 10)
+            if (minDate === undefined || d < minDate) minDate = d
+            if (maxDate === undefined || d > maxDate) maxDate = d
+        }
+
+        if (args.json) {
+            const serialized = allBlocks.map((b) => ({
+                start: b.start.toISOString(),
+                end: b.end.toISOString(),
+                lastActivity: b.lastActivity.toISOString(),
+                isActive: b.isActive,
+                input: b.input,
+                output: b.output,
+                cacheWrite: b.cacheWrite,
+                cacheRead: b.cacheRead,
+                cost: b.cost,
+                missingPricing: b.missingPricing,
+                mainModel: mainModel(b.perModelCost),
+                perModelCost: Object.fromEntries(b.perModelCost),
+            }))
+            console.log(JSON.stringify({ range, minDate, maxDate, blocks: serialized }, null, 2))
+            return
+        }
+
+        console.log(renderBlocksTable(allBlocks, range, { minDate, maxDate }, pricing.fetchedAt, args.exact, now))
+        return
+    }
+
+    const axes = axesFromArgs(args)
     const result = aggregate(records, axes, range, pricing.models, args.modelFilter, args.projectFilter)
 
     if (args.json) {
