@@ -3,7 +3,8 @@
   "module": "src/index.ts",
   "type": "module",
   "bin": {
-    "tokens": "./src/index.ts"
+    "tokens": "./src/index.ts",
+    "tokens-statusline": "./src/statusline.ts"
   },
   "scripts": {
     "lint": "biome check .",
