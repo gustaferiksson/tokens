@@ -12,7 +12,16 @@ type StatuslineInput = {
 
 type AssistantPayload = {
     timestamp?: string
-    message?: { usage?: Record<string, number> }
+    requestId?: string
+    message?: {
+        id?: string
+        usage?: {
+            input_tokens?: number
+            output_tokens?: number
+            cache_creation_input_tokens?: number
+            cache_read_input_tokens?: number
+        }
+    }
 }
 
 type RawLine = AssistantPayload & {
@@ -22,6 +31,8 @@ type RawLine = AssistantPayload & {
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects")
 const SESSION_BLOCK_MS = 5 * 60 * 60 * 1000
+const HISTORICAL_CACHE_PATH = join(homedir(), ".cache", "tokens", "block-max.json")
+const HISTORICAL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
 const ESC = String.fromCharCode(27)
 const useColor = process.env.NO_COLOR === undefined
@@ -52,7 +63,9 @@ const floorToHourMs = (ms: number): number => {
     return d.getTime()
 }
 
-const extractTimestamp = (line: string): number | undefined => {
+type RecordEntry = { ts: number; tokens: number; dedupeKey?: string }
+
+const extractRecord = (line: string): RecordEntry | undefined => {
     if (!line || !line.includes('"usage"')) return undefined
     let obj: RawLine
     try {
@@ -61,12 +74,20 @@ const extractTimestamp = (line: string): number | undefined => {
         return undefined
     }
     const payload: AssistantPayload = obj.data?.message?.message ? obj.data.message : obj
-    if (!payload.message?.usage) return undefined
+    const u = payload.message?.usage
+    if (!u) return undefined
     const ts = Date.parse(payload.timestamp ?? obj.timestamp ?? "")
-    return Number.isFinite(ts) ? ts : undefined
+    if (!Number.isFinite(ts)) return undefined
+    // Cache reads are excluded — they're billed/rate-limited at a small fraction
+    // and would otherwise inflate the totals 10-100x in long-context sessions,
+    // dwarfing actual generation activity.
+    const tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+    const dedupeKey =
+        payload.message?.id && payload.requestId ? `${payload.message.id}:${payload.requestId}` : undefined
+    return { ts, tokens, dedupeKey }
 }
 
-const walkJsonl = async (dir: string, sinceMs: number): Promise<string[]> => {
+const walkJsonl = async (dir: string, sinceMs?: number): Promise<string[]> => {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => null)
     if (!entries) return []
     const out: string[] = []
@@ -75,19 +96,22 @@ const walkJsonl = async (dir: string, sinceMs: number): Promise<string[]> => {
         if (e.isDirectory()) {
             out.push(...(await walkJsonl(full, sinceMs)))
         } else if (e.isFile() && e.name.endsWith(".jsonl")) {
-            const s = await stat(full).catch(() => null)
-            if (s && s.mtimeMs >= sinceMs) out.push(full)
+            if (sinceMs === undefined) {
+                out.push(full)
+            } else {
+                const s = await stat(full).catch(() => null)
+                if (s && s.mtimeMs >= sinceMs) out.push(full)
+            }
         }
     }
     return out
 }
 
-const findActiveBlockStart = async (now: number): Promise<number | undefined> => {
-    const sinceMs = now - SESSION_BLOCK_MS - 60 * 60 * 1000 // 6h lookback covers the active block
+const collectRecords = async (sinceMs?: number): Promise<RecordEntry[]> => {
     const projects = await readdir(PROJECTS_DIR, { withFileTypes: true }).catch(() => null)
-    if (!projects) return undefined
-
-    const timestamps: number[] = []
+    if (!projects) return []
+    const records: RecordEntry[] = []
+    const seen = new Set<string>()
     for (const p of projects) {
         if (!p.isDirectory()) continue
         const files = await walkJsonl(join(PROJECTS_DIR, p.name), sinceMs)
@@ -96,27 +120,95 @@ const findActiveBlockStart = async (now: number): Promise<number | undefined> =>
                 .text()
                 .catch(() => "")
             for (const line of text.split("\n")) {
-                const ts = extractTimestamp(line)
-                if (ts !== undefined && ts >= sinceMs) timestamps.push(ts)
+                const rec = extractRecord(line)
+                if (!rec) continue
+                if (sinceMs !== undefined && rec.ts < sinceMs) continue
+                if (rec.dedupeKey) {
+                    if (seen.has(rec.dedupeKey)) continue
+                    seen.add(rec.dedupeKey)
+                }
+                records.push(rec)
             }
         }
     }
+    return records
+}
 
-    if (timestamps.length === 0) return undefined
-    timestamps.sort((a, b) => a - b)
+type ActiveBlock = { start: number; tokens: number }
 
-    let blockFloor = floorToHourMs(timestamps[0] ?? 0)
-    let lastTs = timestamps[0] ?? 0
-    for (let i = 1; i < timestamps.length; i++) {
-        const t = timestamps[i] ?? 0
-        if (t >= blockFloor + SESSION_BLOCK_MS || t - lastTs > SESSION_BLOCK_MS) {
-            blockFloor = floorToHourMs(t)
+const findActiveBlock = async (now: number): Promise<ActiveBlock | undefined> => {
+    const sinceMs = now - SESSION_BLOCK_MS - 60 * 60 * 1000 // 6h lookback covers the active block
+    const records = await collectRecords(sinceMs)
+    if (records.length === 0) return undefined
+    records.sort((a, b) => a.ts - b.ts)
+
+    let blockFloor: number | undefined
+    let lastTs = 0
+    let blockTokens = 0
+    for (const r of records) {
+        if (blockFloor === undefined || r.ts >= blockFloor + SESSION_BLOCK_MS || r.ts - lastTs > SESSION_BLOCK_MS) {
+            blockFloor = floorToHourMs(r.ts)
+            blockTokens = 0
         }
-        lastTs = t
+        blockTokens += r.tokens
+        lastTs = r.ts
     }
 
-    if (now > blockFloor + SESSION_BLOCK_MS) return undefined
-    return blockFloor
+    if (blockFloor === undefined || now > blockFloor + SESSION_BLOCK_MS) return undefined
+    return { start: blockFloor, tokens: blockTokens }
+}
+
+type HistoricalCache = { maxBlockTokens: number; computedAt: number }
+
+const readHistoricalCache = async (): Promise<HistoricalCache | undefined> => {
+    const file = Bun.file(HISTORICAL_CACHE_PATH)
+    if (!(await file.exists())) return undefined
+    try {
+        return (await file.json()) as HistoricalCache
+    } catch {
+        return undefined
+    }
+}
+
+const writeHistoricalCache = async (data: HistoricalCache): Promise<void> => {
+    await Bun.write(HISTORICAL_CACHE_PATH, JSON.stringify(data))
+}
+
+// Max tokens across all *completed* blocks (anything that started >5h ago).
+// The active block is excluded so the percentage is a comparison, not a tautology.
+const computeHistoricalMaxBlockTokens = async (now: number): Promise<number> => {
+    const records = await collectRecords()
+    if (records.length === 0) return 0
+    records.sort((a, b) => a.ts - b.ts)
+
+    let max = 0
+    let blockFloor: number | undefined
+    let lastTs = 0
+    let blockTokens = 0
+    const flush = () => {
+        if (blockFloor !== undefined && now > blockFloor + SESSION_BLOCK_MS && blockTokens > max) {
+            max = blockTokens
+        }
+    }
+    for (const r of records) {
+        if (blockFloor === undefined || r.ts >= blockFloor + SESSION_BLOCK_MS || r.ts - lastTs > SESSION_BLOCK_MS) {
+            flush()
+            blockFloor = floorToHourMs(r.ts)
+            blockTokens = 0
+        }
+        blockTokens += r.tokens
+        lastTs = r.ts
+    }
+    flush()
+    return max
+}
+
+const getHistoricalMaxBlockTokens = async (now: number): Promise<number> => {
+    const cached = await readHistoricalCache()
+    if (cached && now - cached.computedAt < HISTORICAL_CACHE_TTL_MS) return cached.maxBlockTokens
+    const max = await computeHistoricalMaxBlockTokens(now)
+    await writeHistoricalCache({ maxBlockTokens: max, computedAt: now }).catch(() => {})
+    return max
 }
 
 type GitInfo = {
@@ -189,6 +281,12 @@ const fmtRemaining = (ms: number): string => {
     return `${h}h ${String(m).padStart(2, "0")}m`
 }
 
+const fmtTokens = (n: number): string => {
+    if (n < 1000) return `${n}`
+    if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`
+    return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`
+}
+
 const readStdin = async (): Promise<string> => {
     if (process.stdin.isTTY) return ""
     const chunks: Buffer[] = []
@@ -210,9 +308,10 @@ const main = async (): Promise<void> => {
     const cwd = input.workspace?.current_dir ?? input.cwd ?? process.cwd()
     const now = Date.now()
 
-    const blockStartP = findActiveBlockStart(now)
+    const activeP = findActiveBlock(now)
+    const maxP = getHistoricalMaxBlockTokens(now)
     const git = tryGit(cwd)
-    const blockStart = await blockStartP
+    const [active, historicalMax] = await Promise.all([activeP, maxP])
 
     const repoName = git?.repo ?? (basename(cwd) || homeRel(cwd))
     let header = cyan(repoName)
@@ -230,10 +329,16 @@ const main = async (): Promise<void> => {
         parts.push(flags.length ? `${git.branch}${dim(" : ")}${flags.join(" ")}` : git.branch)
     }
 
-    if (blockStart !== undefined) {
-        const pct = Math.min(100, Math.round(((now - blockStart) / SESSION_BLOCK_MS) * 100))
-        const remaining = fmtRemaining(blockStart + SESSION_BLOCK_MS - now)
-        parts.push(`${renderBar(pct)} ${pctColor(pct, `${pct}%`)} ${dim(`${remaining} left`)}`)
+    if (active !== undefined) {
+        const remaining = fmtRemaining(active.start + SESSION_BLOCK_MS - now)
+        const usageText = fmtTokens(active.tokens)
+        if (historicalMax > 0) {
+            const rawPct = (active.tokens / historicalMax) * 100
+            const pct = Math.min(100, Math.round(rawPct))
+            parts.push(`${renderBar(pct)} ${pctColor(pct, `${pct}%`)} ${dim(`${usageText} · ${remaining} left`)}`)
+        } else {
+            parts.push(dim(`${usageText} · ${remaining} left`))
+        }
     }
 
     process.stdout.write(parts.join(dim(" │ ")))
