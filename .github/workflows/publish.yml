@@ -18,10 +18,15 @@ jobs:
         with:
           bun-version: latest
 
+      # No `registry-url` — that flag writes an empty _authToken to .npmrc and
+      # blocks npm's OIDC token-exchange. Trusted Publishing needs the CLI to
+      # handle auth itself.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+
+      # Trusted Publishing requires npm >= 11.5.1; node 22 ships with older npm.
+      - run: npm install -g npm@latest
 
       - run: bun install --frozen-lockfile
 
