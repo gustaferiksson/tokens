@@ -20,13 +20,10 @@ jobs:
 
       # No `registry-url` — that flag writes an empty _authToken to .npmrc and
       # blocks npm's OIDC token-exchange. Trusted Publishing needs the CLI to
-      # handle auth itself.
+      # handle auth itself. Node 24 ships an npm new enough (>=11.5.1) for OIDC.
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
-      # Trusted Publishing requires npm >= 11.5.1; node 22 ships with older npm.
-      - run: npm install -g npm@latest
+          node-version: "24"
 
       - run: bun install --frozen-lockfile
 
