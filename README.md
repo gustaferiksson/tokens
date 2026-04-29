@@ -87,10 +87,13 @@ tokens --blocks --week -1        # last week's blocks
 {
   "statusLine": {
     "type": "command",
-    "command": "tokens-statusline"
+    "command": "tokens-statusline",
+    "refreshInterval": 30
   }
 }
 ```
+
+`refreshInterval` (seconds) re-runs the command on a wall-clock timer in addition to event-driven updates, so the bar ticks up and the time-left counts down even when the session is idle. Omit it to update only on assistant turns.
 
 It prints one line, e.g.:
 
