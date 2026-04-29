@@ -1,18 +1,49 @@
 {
-  "name": "tokens",
-  "module": "src/index.ts",
+  "name": "@gustaferiksson/tokens",
+  "version": "0.1.0",
+  "description": "CLI that breaks down Claude Code usage from local session logs (~/.claude/projects/) by date, project, and model — with cost computed from live Anthropic pricing.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "cli",
+    "usage",
+    "tokens",
+    "cost",
+    "ccusage"
+  ],
+  "homepage": "https://github.com/gustaferiksson/tokens#readme",
+  "bugs": {
+    "url": "https://github.com/gustaferiksson/tokens/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gustaferiksson/tokens.git"
+  },
+  "license": "MIT",
+  "author": "Gustaf Eriksson",
   "type": "module",
+  "module": "src/index.ts",
   "bin": {
     "tokens": "./src/index.ts",
     "tokens-statusline": "./src/statusline.ts",
     "tokens-subagent-status": "./src/subagent-status.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "scripts": {
     "lint": "biome check .",
     "lint:fix": "biome check . --write",
     "check": "tsc --noEmit && bun run lint",
     "install:specs": "bun build src/specs/*.ts --outdir ~/.fig/autocomplete/build --minify --format esm",
-    "build": "bun build src/index.ts --target bun --outdir ./out"
+    "build": "bun build src/index.ts --target bun --outdir ./out",
+    "prepublishOnly": "bun run check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.8",
@@ -22,5 +53,8 @@
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -1,6 +1,7 @@
 #! /usr/bin/env bun
 
 import { type Block, identifyBlocks, isActiveBlock } from "./blocks"
+import { installSpecs } from "./install-specs"
 import { collectUsage, projectLabel, type UsageRecord } from "./parser"
 import { computeCost, findPricing, loadPricing, type ModelPricing } from "./pricing"
 import { type DateRange, inRange, type RangeSpec, resolveRange } from "./ranges"
@@ -24,6 +25,7 @@ const HELP = `tokens — Claude Code usage breakdown
 
 USAGE
   tokens [options]
+  tokens install-specs   Build & install Fig autocomplete spec to ~/.fig/autocomplete/build
 
 RANGE (mutually exclusive, default: all time)
   --last <N>            Last N days (inclusive)
@@ -514,6 +516,11 @@ const renderBlocksTable = (
 }
 
 const main = async (): Promise<void> => {
+    if (process.argv[2] === "install-specs") {
+        await installSpecs()
+        return
+    }
+
     let args: Args
     try {
         args = parseArgs(process.argv.slice(2))

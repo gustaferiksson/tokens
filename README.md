@@ -4,16 +4,36 @@ CLI tool that breaks down [Claude Code](https://claude.com/claude-code) usage fr
 
 ## Install
 
+Requires [Bun](https://bun.sh) (the binaries use `Bun.file` / `Bun.write` — `npx` from a pure-Node setup won't work).
+
+**One-shot via bunx** (no install):
+
+```bash
+bunx @gustaferiksson/tokens --week
+bunx @gustaferiksson/tokens --blocks --today
+```
+
+**Global install** (recommended for the statusline binaries — repeated `bunx` invocations would be too slow):
+
+```bash
+bun install -g @gustaferiksson/tokens
+# exposes `tokens`, `tokens-statusline`, `tokens-subagent-status` on $PATH
+```
+
+**From source**:
+
 ```bash
 git clone https://github.com/gustaferiksson/tokens.git
 cd tokens
 bun install
-bun link        # exposes `tokens`, `tokens-statusline`, `tokens-subagent-status` on $PATH
+bun link
 ```
 
 Optional Fig autocomplete spec:
 
 ```bash
+bunx @gustaferiksson/tokens install-specs   # one-shot, no install needed
+# or, if you cloned the repo
 bun run install:specs
 ```
 
