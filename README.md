@@ -127,6 +127,17 @@ tokens │ main : ↑1 ~2 ?1 │ ▓▓▓░░░░░░░ 33% 1.2M · 3h 2
   - **Pro/Max subscribers** (after the first API response in the session): Claude Code passes `rate_limits.five_hour.used_percentage` and `resets_at` on stdin. We use those directly, so the bar matches the `/usage` console exactly. No JSONL scan needed on this path.
   - **API users / first render before any response**: fall back to a local heuristic that scans `~/.claude/projects/*/**.jsonl`. Bar = `current_block_tokens / max_completed_block_tokens`, with cache reads excluded (they're rate-limited at a small fraction and would inflate totals 10–100×). Block detection mirrors ccusage's rules (hour-floored start, breaks on >5h gap or 5h cap). Historical max is cached at `~/.cache/tokens/block-max.json` for 24h.
 
+## Releasing
+
+CI publishes to npm on tag push (`.github/workflows/publish.yml`) using [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) — no `NPM_TOKEN` secret. To cut a release:
+
+```bash
+npm version patch -m "Release v%s"   # bumps package.json, commits, tags v<x.y.z>
+git push --follow-tags               # pushes commit + new tag, kicking off the workflow
+```
+
+Use `minor` or `major` instead of `patch` for non-patch releases. The workflow guards against tag/version drift before it publishes.
+
 ## Notes
 
 - Sub-agent (Haiku) calls live in `<session>/subagents/*.jsonl` and are picked up via a recursive walk.
