@@ -5,9 +5,21 @@ import { readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 
+type RateLimitWindow = {
+    used_percentage?: number
+    resets_at?: number // unix epoch seconds
+}
+
 type StatuslineInput = {
     cwd?: string
     workspace?: { current_dir?: string }
+    // Pro/Max subscribers: present after the first API response in the session.
+    // API users or first render before any response: absent — fall back to the
+    // historical-block heuristic.
+    rate_limits?: {
+        five_hour?: RateLimitWindow
+        seven_day?: RateLimitWindow
+    }
 }
 
 type AssistantPayload = {
@@ -308,8 +320,17 @@ const main = async (): Promise<void> => {
     const cwd = input.workspace?.current_dir ?? input.cwd ?? process.cwd()
     const now = Date.now()
 
-    const activeP = findActiveBlock(now)
-    const maxP = getHistoricalMaxBlockTokens(now)
+    // Prefer Claude Code's own rate-limit numbers (matches the `/usage` console
+    // exactly). Only scan local JSONL when those aren't available — saves
+    // hundreds of ms on every render for Pro/Max users.
+    const rl = input.rate_limits?.five_hour
+    const ccPct =
+        typeof rl?.used_percentage === "number" && Number.isFinite(rl.used_percentage) ? rl.used_percentage : undefined
+    const ccResetMs = typeof rl?.resets_at === "number" ? rl.resets_at * 1000 : undefined
+
+    const needLocalScan = ccPct === undefined
+    const activeP = needLocalScan ? findActiveBlock(now) : Promise.resolve(undefined)
+    const maxP = needLocalScan ? getHistoricalMaxBlockTokens(now) : Promise.resolve(0)
     const git = tryGit(cwd)
     const [active, historicalMax] = await Promise.all([activeP, maxP])
 
@@ -329,7 +350,14 @@ const main = async (): Promise<void> => {
         parts.push(flags.length ? `${git.branch}${dim(" : ")}${flags.join(" ")}` : git.branch)
     }
 
-    if (active !== undefined) {
+    if (ccPct !== undefined) {
+        // Known issue (anthropics/claude-code#31820): the upstream % can briefly
+        // exceed 100. Clamp so the bar stays sane.
+        const pct = Math.min(100, Math.max(0, Math.round(ccPct)))
+        const remaining = ccResetMs !== undefined ? fmtRemaining(ccResetMs - now) : undefined
+        const tail = remaining ? ` ${dim(`${remaining} left`)}` : ""
+        parts.push(`${renderBar(pct)} ${pctColor(pct, `${pct}%`)}${tail}`)
+    } else if (active !== undefined) {
         const remaining = fmtRemaining(active.start + SESSION_BLOCK_MS - now)
         const usageText = fmtTokens(active.tokens)
         if (historicalMax > 0) {

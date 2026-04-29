@@ -103,7 +103,9 @@ tokens │ main : ↑1 ~2 ?1 │ ▓▓▓░░░░░░░ 33% 1.2M · 3h 2
 
 - **repo** — git repo name (cyan), with the relative subpath when you're inside a subdirectory. Falls back to the cwd basename if not in a git repo.
 - **branch + flags** — `<branch> : ↑ahead ↓behind +staged ~modified ?untracked`. Each flag is omitted when zero (and the `:` separator with them). From a single `git status --porcelain=v2 --branch` call.
-- **session block** — Anthropic's rolling 5-hour usage window. `▓░` bar + percent of session token usage, current block tokens, and time until reset. Green / yellow / red at 65 / 85%. Block detection scans the last ~6h of `~/.claude/projects/*/**.jsonl` and follows ccusage's identification rules (hour-floored start, breaks on >5h gap or 5h cap). The percentage compares the active block against the max of all completed historical blocks (cached at `~/.cache/tokens/block-max.json` for 24h). Token totals exclude cache reads (which are billed/rate-limited at a small fraction and would otherwise dwarf real generation).
+- **session block** — Anthropic's rolling 5-hour usage window. `▓░` bar + percent + time until reset. Green / yellow / red at 65 / 85%.
+  - **Pro/Max subscribers** (after the first API response in the session): Claude Code passes `rate_limits.five_hour.used_percentage` and `resets_at` on stdin. We use those directly, so the bar matches the `/usage` console exactly. No JSONL scan needed on this path.
+  - **API users / first render before any response**: fall back to a local heuristic that scans `~/.claude/projects/*/**.jsonl`. Bar = `current_block_tokens / max_completed_block_tokens`, with cache reads excluded (they're rate-limited at a small fraction and would inflate totals 10–100×). Block detection mirrors ccusage's rules (hour-floored start, breaks on >5h gap or 5h cap). Historical max is cached at `~/.cache/tokens/block-max.json` for 24h.
 
 ## Notes
 
