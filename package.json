@@ -1,6 +1,6 @@
 {
   "name": "@gustaferiksson/tokens",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI that breaks down Claude Code usage from local session logs (~/.claude/projects/) by date, project, and model — with cost computed from live Anthropic pricing.",
   "keywords": [
     "claude",
