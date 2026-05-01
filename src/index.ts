@@ -189,7 +189,10 @@ const aggregate = (
         const date = axes.date ? r.date : undefined
         const project = axes.project ? r.project : undefined
         const model = axes.model ? r.model : undefined
-        const key = `${date ?? ""}|${project ?? ""}|${model ?? ""}`
+        // Bucket project axis by projectLabel(cwd), not raw cwd, so agent-clone runs
+        // (~/.baywatch/clones/<owner>--<repo>--…) merge with the user's main `<repo>` entry.
+        const projectKey = axes.project ? projectLabel(r.project) : ""
+        const key = `${date ?? ""}|${projectKey}|${model ?? ""}`
 
         let bucket = buckets.get(key)
         if (!bucket) {

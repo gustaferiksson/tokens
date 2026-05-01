@@ -60,7 +60,18 @@ const findCwd = async (projectPath: string): Promise<string | undefined> => {
     return undefined
 }
 
-export const projectLabel = (cwd: string): string => basename(cwd) || cwd
+export const projectLabel = (cwd: string): string => {
+    const base = basename(cwd) || cwd
+    // Baywatch's agent runs work in cloned-off directories at ~/.baywatch/clones/, named
+    // `<owner>--<repo>--<branch-slug>--<short-id>`. Surface them as the underlying repo
+    // so the row folds into the user's main project entry instead of getting an opaque
+    // branch+id label of its own.
+    if (cwd.includes("/.baywatch/clones/")) {
+        const segments = base.split("--")
+        if (segments.length >= 4 && segments[1]) return segments[1]
+    }
+    return base
+}
 
 export const listProjects = async (): Promise<{ id: string; cwd: string; path: string }[]> => {
     const entries = await readdir(PROJECTS_DIR, { withFileTypes: true })
