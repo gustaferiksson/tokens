@@ -1,6 +1,6 @@
 /// <reference types="@withfig/autocomplete-types" />
 
-const RANGE_FLAGS = ["--last", "--from", "--to", "--today", "--yesterday", "--week", "--month"]
+const RANGE_FLAGS = ["--last", "--from", "--to", "--today", "--yesterday", "--week", "--month", "--quarter"]
 const exclusiveOnRange = (self: string) => RANGE_FLAGS.filter((f) => f !== self)
 
 const offsetSuggestions: Fig.Suggestion[] = [
@@ -9,6 +9,14 @@ const offsetSuggestions: Fig.Suggestion[] = [
     { name: "-2", description: "2 periods ago" },
     { name: "-3", description: "3 periods ago" },
     { name: "-4", description: "4 periods ago" },
+]
+
+const quarterSuggestions: Fig.Suggestion[] = [
+    ...offsetSuggestions,
+    { name: "Q1", description: "Q1 (Jan-Mar) of this year" },
+    { name: "Q2", description: "Q2 (Apr-Jun) of this year" },
+    { name: "Q3", description: "Q3 (Jul-Sep) of this year" },
+    { name: "Q4", description: "Q4 (Oct-Dec) of this year" },
 ]
 
 const completionSpec: Fig.Spec = {
@@ -46,6 +54,12 @@ const completionSpec: Fig.Spec = {
             description: "Calendar month; optional offset (0=this, -1=last, ...)",
             args: { name: "offset", isOptional: true, suggestions: offsetSuggestions },
             exclusiveOn: exclusiveOnRange("--month"),
+        },
+        {
+            name: "--quarter",
+            description: "Quarter (3 months); optional offset (0=this, -1=last, ...) or Q1-Q4",
+            args: { name: "offset", isOptional: true, suggestions: quarterSuggestions },
+            exclusiveOn: exclusiveOnRange("--quarter"),
         },
         {
             name: "--project",
