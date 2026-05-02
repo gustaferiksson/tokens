@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { readdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -60,18 +61,34 @@ const findCwd = async (projectPath: string): Promise<string | undefined> => {
     return undefined
 }
 
-export const projectLabel = (cwd: string): string => {
-    const base = basename(cwd) || cwd
-    // Baywatch's agent runs work in cloned-off directories at ~/.baywatch/clones/, named
-    // `<owner>--<repo>--<branch-slug>--<short-id>`. Surface them as the underlying repo
-    // so the row folds into the user's main project entry instead of getting an opaque
-    // branch+id label of its own.
-    if (cwd.includes("/.baywatch/clones/")) {
-        const segments = base.split("--")
-        if (segments.length >= 4 && segments[1]) return segments[1]
+// Cache the (cwd → repo name) resolution per cwd so we only spawn `git` once per project.
+const repoNameCache = new Map<string, string | null>()
+
+const gitRemoteRepoName = (cwd: string): string | null => {
+    const cached = repoNameCache.get(cwd)
+    if (cached !== undefined) return cached
+    let result: string | null = null
+    try {
+        const url = execFileSync("git", ["-C", cwd, "config", "remote.origin.url"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim()
+        // git@host:owner/repo.git, https://host/owner/repo.git, /local/path/repo, file:///...
+        // → take the last path segment, strip a trailing .git
+        const m = url.match(/[/:]([^/]+?)(?:\.git)?\/?$/)
+        if (m?.[1]) result = m[1]
+    } catch {
+        // not a git repo, dir gone, no origin set — fall back to basename
     }
-    return base
+    repoNameCache.set(cwd, result)
+    return result
 }
+
+// Display label for a project's cwd. Prefers the repo name from `git config remote.origin.url`
+// so clones, worktrees, forks, and tools that work in cloned-off directories (e.g. baywatch's
+// agent clones at ~/.baywatch/clones/<owner>--<repo>--…) all fold into the same row as the
+// user's main checkout. Falls back to the directory's basename when git can't resolve.
+export const projectLabel = (cwd: string): string => gitRemoteRepoName(cwd) ?? basename(cwd) ?? cwd
 
 export const listProjects = async (): Promise<{ id: string; cwd: string; path: string }[]> => {
     const entries = await readdir(PROJECTS_DIR, { withFileTypes: true })
