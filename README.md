@@ -54,8 +54,9 @@ tokens [options]
 | `--yesterday` | Yesterday only |
 | `--week [offset]` | Week (Mon–Sun); `0` = this, `-1` = last, `-2` = two ago, … |
 | `--month [offset]` | Calendar month; same offset semantics as `--week` |
+| `--quarter [val]` | Quarter (3 months); offset (`0` = this, `-1` = last, …) or `Q1`–`Q4` of this year |
 
-`--week` and `--month` cap their upper bound at today, so a current week shows `Mon → today`, not `Mon → Sun`.
+`--week`, `--month`, and `--quarter` cap their upper bound at today, so a current week shows `Mon → today`, not `Mon → Sun`.
 
 ### Grouping
 
@@ -89,6 +90,8 @@ Cached at `~/.cache/tokens/pricing.json` for 7 days. If a refresh fails, the sta
 tokens --week                    # this week, combined
 tokens --week -1                 # last week
 tokens --month -2                # two months ago
+tokens --quarter                 # this quarter
+tokens --quarter Q1              # Q1 of this year
 tokens --last 7 --by-model       # last 7 days, model breakdown
 tokens --project --last 30       # last 30 days, by project
 tokens --project hub             # group by project + filter to "hub"

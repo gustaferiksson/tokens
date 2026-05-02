@@ -35,6 +35,7 @@ RANGE (mutually exclusive, default: all time)
   --yesterday           Yesterday only
   --week [offset]       Week (Mon-Sun); offset 0 = this, -1 = last, -2 = 2 ago...
   --month [offset]      Calendar month; offset 0 = this, -1 = last, -2 = 2 ago...
+  --quarter [val]       Quarter (3 months); offset (0 = this, -1 = last, ...) or Q1-Q4 of this year
 
 GROUPING
   (default)             One row per date, combined; shows Main Model
@@ -99,6 +100,19 @@ const parseArgs = (argv: string[]): Args => {
                 if (next !== undefined && /^-?\d+$/.test(next)) i++
                 if (a === "--week") range.weekOffset = offset
                 else range.monthOffset = offset
+                break
+            }
+            case "--quarter": {
+                const next = argv[i + 1]
+                if (next !== undefined && /^[Qq][1-4]$/.test(next)) {
+                    range.quarter = next.toUpperCase() as "Q1" | "Q2" | "Q3" | "Q4"
+                    i++
+                } else if (next !== undefined && /^-?\d+$/.test(next)) {
+                    range.quarter = Number.parseInt(next, 10)
+                    i++
+                } else {
+                    range.quarter = 0
+                }
                 break
             }
             case "--project": {
