@@ -57,6 +57,15 @@ const completionSpec: Fig.Spec = {
             },
         },
         {
+            name: "--session",
+            description: "Group by session; optional substring filter on session ID",
+            args: {
+                name: "filter",
+                isOptional: true,
+                description: "Session ID substring",
+            },
+        },
+        {
             name: "--by-model",
             description: "Add a Model column; optional substring filter",
             args: {

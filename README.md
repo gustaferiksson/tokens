@@ -63,11 +63,14 @@ tokens [options]
 | --- | --- |
 | _(default)_ | one per date, combined; `Main Model` column shows the dominant model by cost (`+N` if other models also contributed) |
 | `--project [filter]` | one per project; optional substring filter |
+| `--session [filter]` | one per session; optional substring filter on the session UUID |
 | `--by-model [filter]` | adds a `Model` column; optional substring filter |
 | `--detailed` | one per (date, project, model) |
 | `--blocks` | one per Anthropic 5h session block; the active block is highlighted and its duration shows `(active)` |
 
-Project rows sort by total cost (descending). Date rows stay chronological.
+Project and session rows sort by total cost (descending). Date rows stay chronological.
+
+Identical messages that appear in multiple session files (resume / fork) are counted once, so cost stays accurate. As a side effect, the session count can be lower than the Claude Code Analytics for Teams dashboard's session count when sessions have been resumed.
 
 ### Output
 
@@ -92,6 +95,8 @@ tokens --month -2                # two months ago
 tokens --last 7 --by-model       # last 7 days, model breakdown
 tokens --project --last 30       # last 30 days, by project
 tokens --project hub             # group by project + filter to "hub"
+tokens --session --today         # one row per session for today
+tokens --session 78448b53        # filter to a specific session by ID prefix
 tokens --by-model haiku          # group by model + filter to haiku
 tokens --detailed --month        # full (date, project, model) for this month
 tokens --json --month            # JSON output

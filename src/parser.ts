@@ -13,6 +13,7 @@ export type UsageRecord = {
     cacheWrite: number
     cacheRead: number
     requestId?: string
+    sessionId?: string
 }
 
 type AssistantPayload = {
@@ -36,6 +37,7 @@ type RawLine = AssistantPayload & {
     type?: string
     timestamp?: string
     cwd?: string | null
+    sessionId?: string
     data?: { message?: AssistantPayload }
 }
 
@@ -139,6 +141,7 @@ const parseLine = (line: string, project: string, seenIds: Set<string>): UsageRe
         cacheWrite: usage.cache_creation_input_tokens ?? 0,
         cacheRead: usage.cache_read_input_tokens ?? 0,
         requestId: payload.requestId,
+        sessionId: obj.sessionId,
     }
 }
 

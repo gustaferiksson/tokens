@@ -10,11 +10,13 @@ import { type Column, fmtInt, fmtTokens, fmtUsd, gray, type Row, renderTable } f
 type Args = {
     range: RangeSpec
     byProject: boolean
+    bySession: boolean
     byModel: boolean
     byBlock: boolean
     detailed: boolean
     modelFilter?: string
     projectFilter?: string
+    sessionFilter?: string
     json: boolean
     exact: boolean
     refreshPricing: boolean
@@ -39,6 +41,7 @@ RANGE (mutually exclusive, default: all time)
 GROUPING
   (default)             One row per date, combined; shows Main Model
   --project [filter]    Group by project; optional substring filter
+  --session [filter]    Group by session; optional substring filter on session ID
   --by-model [filter]   Add a Model column; optional substring filter
   --detailed            One row per (date, project, model)
   --blocks              One row per Anthropic 5h session block
@@ -55,6 +58,7 @@ const parseArgs = (argv: string[]): Args => {
     const out: Args = {
         range,
         byProject: false,
+        bySession: false,
         byModel: false,
         byBlock: false,
         detailed: false,
@@ -110,6 +114,15 @@ const parseArgs = (argv: string[]): Args => {
                 }
                 break
             }
+            case "--session": {
+                out.bySession = true
+                const next = argv[i + 1]
+                if (next !== undefined && !next.startsWith("-")) {
+                    out.sessionFilter = next
+                    i++
+                }
+                break
+            }
             case "--by-model": {
                 out.byModel = true
                 const next = argv[i + 1]
@@ -142,11 +155,12 @@ const parseArgs = (argv: string[]): Args => {
     return out
 }
 
-type GroupAxes = { date: boolean; project: boolean; model: boolean }
+type GroupAxes = { date: boolean; project: boolean; model: boolean; session: boolean }
 
 const axesFromArgs = (args: Args): GroupAxes => {
-    if (args.detailed) return { date: true, project: true, model: true }
-    return { date: !args.byProject, project: args.byProject, model: args.byModel }
+    if (args.detailed) return { date: true, project: true, model: true, session: false }
+    if (args.bySession) return { date: false, project: false, model: args.byModel, session: true }
+    return { date: !args.byProject, project: args.byProject, model: args.byModel, session: false }
 }
 
 const prettyModel = (model: string): string => model.replace(/^claude-/, "").replace(/-\d{8}$/, "")
@@ -155,6 +169,9 @@ type Agg = {
     date?: string
     project?: string
     model?: string // present when axes.model
+    session?: string // present when axes.session
+    sessionStart?: string // earliest record timestamp in this session bucket (ISO)
+    sessionProject?: string // resolved project label for the session bucket
     input: number
     output: number
     cacheWrite: number
@@ -172,7 +189,8 @@ const aggregate = (
     range: DateRange,
     pricing: Record<string, ModelPricing>,
     modelFilter?: string,
-    projectFilter?: string
+    projectFilter?: string,
+    sessionFilter?: string
 ): AggregateResult => {
     const buckets = new Map<string, Agg>()
     let minDate: string | undefined
@@ -182,6 +200,10 @@ const aggregate = (
         if (!inRange(r.date, range)) continue
         if (modelFilter && !r.model.includes(modelFilter)) continue
         if (projectFilter && !projectLabel(r.project).includes(projectFilter)) continue
+        if (sessionFilter && !(r.sessionId ?? "").includes(sessionFilter)) continue
+        // In session mode, drop records lacking a session id rather than folding them into
+        // an unlabeled "blank" row.
+        if (axes.session && !r.sessionId) continue
 
         if (minDate === undefined || r.date < minDate) minDate = r.date
         if (maxDate === undefined || r.date > maxDate) maxDate = r.date
@@ -189,10 +211,12 @@ const aggregate = (
         const date = axes.date ? r.date : undefined
         const project = axes.project ? r.project : undefined
         const model = axes.model ? r.model : undefined
+        const session = axes.session ? r.sessionId : undefined
         // Bucket project axis by projectLabel(cwd), not raw cwd, so agent-clone runs
         // (~/.baywatch/clones/<owner>--<repo>--…) merge with the user's main `<repo>` entry.
         const projectKey = axes.project ? projectLabel(r.project) : ""
-        const key = `${date ?? ""}|${projectKey}|${model ?? ""}`
+        const sessionKey = axes.session ? (r.sessionId ?? "") : ""
+        const key = `${date ?? ""}|${projectKey}|${model ?? ""}|${sessionKey}`
 
         let bucket = buckets.get(key)
         if (!bucket) {
@@ -200,6 +224,9 @@ const aggregate = (
                 date,
                 project,
                 model,
+                session,
+                sessionStart: axes.session ? r.timestamp : undefined,
+                sessionProject: axes.session ? projectLabel(r.project) : undefined,
                 input: 0,
                 output: 0,
                 cacheWrite: 0,
@@ -209,6 +236,8 @@ const aggregate = (
                 perModelCost: new Map(),
             }
             buckets.set(key, bucket)
+        } else if (axes.session && bucket.sessionStart && r.timestamp < bucket.sessionStart) {
+            bucket.sessionStart = r.timestamp
         }
 
         bucket.input += r.input
@@ -243,11 +272,21 @@ const aggregate = (
     if (axes.project) {
         for (const r of rows) projectTotals.set(r.project ?? "", (projectTotals.get(r.project ?? "") ?? 0) + r.cost)
     }
+    const sessionTotals = new Map<string, number>()
+    if (axes.session) {
+        for (const r of rows) sessionTotals.set(r.session ?? "", (sessionTotals.get(r.session ?? "") ?? 0) + r.cost)
+    }
 
     rows.sort((a, b) => {
         if (axes.date) {
             const d = (a.date ?? "").localeCompare(b.date ?? "")
             if (d !== 0) return d
+        }
+        if (axes.session) {
+            const diff = (sessionTotals.get(b.session ?? "") ?? 0) - (sessionTotals.get(a.session ?? "") ?? 0)
+            if (diff !== 0) return diff
+            const tiebreak = (a.sessionStart ?? "").localeCompare(b.sessionStart ?? "")
+            if (tiebreak !== 0) return tiebreak
         }
         if (axes.project) {
             const diff = (projectTotals.get(b.project ?? "") ?? 0) - (projectTotals.get(a.project ?? "") ?? 0)
@@ -324,6 +363,22 @@ const renderTextTable = (
     const columns: Column<Agg>[] = []
     if (axes.date) columns.push({ header: "Date", get: (r) => r.date ?? "" })
     if (axes.project) columns.push({ header: "Project", get: (r) => projectLabel(r.project ?? "") })
+    const sessionCount = axes.session ? new Set(rows.map((r) => r.session ?? "")).size : 0
+    if (axes.session) {
+        columns.push({
+            header: "Started",
+            get: (r) => (r.sessionStart ? fmtSessionStart(r.sessionStart) : ""),
+        })
+        columns.push({ header: "Project", get: (r) => r.sessionProject ?? "" })
+        columns.push({
+            header: "Session",
+            get: (r) => {
+                const s = r.session ?? ""
+                if (s === "TOTAL") return `TOTAL (${sessionCount})`
+                return exact ? s : s.slice(0, 8)
+            },
+        })
+    }
     if (axes.model) {
         columns.push({ header: "Model", get: (r) => prettyModel(r.model ?? "") })
     } else {
@@ -354,6 +409,7 @@ const renderTextTable = (
         ...totals,
         date: axes.date ? "TOTAL" : undefined,
         project: axes.project && !axes.date ? "TOTAL" : undefined,
+        session: axes.session ? "TOTAL" : undefined,
         model: axes.model ? "" : undefined,
     }
 
@@ -420,6 +476,16 @@ const fmtBlockStart = (d: Date): string => {
     const day = String(d.getDate()).padStart(2, "0")
     const h = String(d.getHours()).padStart(2, "0")
     return `${y}-${m}-${day} ${h}:00`
+}
+
+const fmtSessionStart = (iso: string): string => {
+    const d = new Date(iso)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    const h = String(d.getHours()).padStart(2, "0")
+    const mn = String(d.getMinutes()).padStart(2, "0")
+    return `${y}-${m}-${day} ${h}:${mn}`
 }
 
 const fmtDuration = (ms: number): string => {
@@ -591,7 +657,15 @@ const main = async (): Promise<void> => {
     }
 
     const axes = axesFromArgs(args)
-    const result = aggregate(records, axes, range, pricing.models, args.modelFilter, args.projectFilter)
+    const result = aggregate(
+        records,
+        axes,
+        range,
+        pricing.models,
+        args.modelFilter,
+        args.projectFilter,
+        args.sessionFilter
+    )
 
     if (args.json) {
         const serialized = result.rows.map((r) => ({
@@ -599,8 +673,19 @@ const main = async (): Promise<void> => {
             mainModel: axes.model ? undefined : mainModel(r.perModelCost),
             perModelCost: Object.fromEntries(r.perModelCost),
         }))
+        const sessionCount = axes.session ? new Set(result.rows.map((r) => r.session ?? "")).size : undefined
         console.log(
-            JSON.stringify({ range, minDate: result.minDate, maxDate: result.maxDate, rows: serialized }, null, 2)
+            JSON.stringify(
+                {
+                    range,
+                    minDate: result.minDate,
+                    maxDate: result.maxDate,
+                    ...(sessionCount !== undefined ? { sessionCount } : {}),
+                    rows: serialized,
+                },
+                null,
+                2
+            )
         )
         return
     }
