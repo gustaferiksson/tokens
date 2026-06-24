@@ -252,6 +252,7 @@ const aggregate = (
                 input: r.input,
                 output: r.output,
                 cacheWrite: r.cacheWrite,
+                cacheWrite1h: r.cacheWrite1h,
                 cacheRead: r.cacheRead,
             })
             bucket.cost += cost

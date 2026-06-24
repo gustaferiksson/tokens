@@ -10,7 +10,8 @@ export type UsageRecord = {
     model: string
     input: number
     output: number
-    cacheWrite: number
+    cacheWrite: number // total cache-creation tokens (5-minute + 1-hour TTL)
+    cacheWrite1h: number // subset of cacheWrite written with a 1-hour TTL (billed at 2x input)
     cacheRead: number
     requestId?: string
     sessionId?: string
@@ -27,6 +28,12 @@ type AssistantPayload = {
             output_tokens?: number
             cache_creation_input_tokens?: number
             cache_read_input_tokens?: number
+            // Per-TTL breakdown of cache_creation_input_tokens. Anthropic bills the
+            // 1-hour bucket at 2x base input, vs 1.25x for the 5-minute bucket.
+            cache_creation?: {
+                ephemeral_5m_input_tokens?: number
+                ephemeral_1h_input_tokens?: number
+            }
         }
     }
 }
@@ -104,7 +111,11 @@ export const listProjects = async (): Promise<{ id: string; cwd: string; path: s
     )
 }
 
-const parseLine = (line: string, project: string, seenIds: Set<string>): UsageRecord | undefined => {
+// Dedupe key for a record: the same message appears in multiple session files after a
+// fork / resume. message id + request id together identify one billed API response.
+type ParsedLine = { record: UsageRecord; dedupeKey: string | undefined }
+
+const parseLine = (line: string, project: string): ParsedLine | undefined => {
     if (!line) return undefined
     let obj: RawLine
     try {
@@ -122,16 +133,10 @@ const parseLine = (line: string, project: string, seenIds: Set<string>): UsageRe
     const model = payload.message?.model
     if (!model || model === "<synthetic>") return undefined
 
-    // Dedupe by message id + request id (same message can appear in multiple sessions
-    // when sessions are forked / resumed).
     const dedupeKey =
         payload.message?.id && payload.requestId ? `${payload.message.id}:${payload.requestId}` : undefined
-    if (dedupeKey) {
-        if (seenIds.has(dedupeKey)) return undefined
-        seenIds.add(dedupeKey)
-    }
 
-    return {
+    const record: UsageRecord = {
         project,
         date: timestamp.slice(0, 10),
         timestamp,
@@ -139,11 +144,15 @@ const parseLine = (line: string, project: string, seenIds: Set<string>): UsageRe
         input: usage.input_tokens ?? 0,
         output: usage.output_tokens ?? 0,
         cacheWrite: usage.cache_creation_input_tokens ?? 0,
+        cacheWrite1h: usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
         cacheRead: usage.cache_read_input_tokens ?? 0,
         requestId: payload.requestId,
         sessionId: obj.sessionId,
     }
+    return { record, dedupeKey }
 }
+
+const totalTokens = (r: UsageRecord): number => r.input + r.output + r.cacheWrite + r.cacheRead
 
 const walkJsonl = async (dir: string): Promise<string[]> => {
     const out: string[] = []
@@ -162,19 +171,30 @@ const walkJsonl = async (dir: string): Promise<string[]> => {
 
 export const collectUsage = async (): Promise<UsageRecord[]> => {
     const projects = await listProjects()
-    const records: UsageRecord[] = []
-    const seenIds = new Set<string>()
+    // Forked / resumed sessions copy a message into multiple files, and the copies can
+    // differ: a streaming-intermediate copy carries partial output_tokens while the
+    // completed copy carries the full (billed) count. Keep the most-complete copy per
+    // dedupe key (max total tokens) rather than the first seen, so cost isn't under-reported.
+    const byKey = new Map<string, UsageRecord>()
+    const unkeyed: UsageRecord[] = []
 
     for (const project of projects) {
         const files = await walkJsonl(project.path)
         for (const file of files) {
             const content = await Bun.file(file).text()
             for (const line of content.split("\n")) {
-                const rec = parseLine(line, project.cwd, seenIds)
-                if (rec) records.push(rec)
+                const parsed = parseLine(line, project.cwd)
+                if (!parsed) continue
+                const { record, dedupeKey } = parsed
+                if (!dedupeKey) {
+                    unkeyed.push(record)
+                    continue
+                }
+                const existing = byKey.get(dedupeKey)
+                if (!existing || totalTokens(record) > totalTokens(existing)) byKey.set(dedupeKey, record)
             }
         }
     }
 
-    return records
+    return [...byKey.values(), ...unkeyed]
 }

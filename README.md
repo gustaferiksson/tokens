@@ -70,7 +70,7 @@ tokens [options]
 
 Project and session rows sort by total cost (descending). Date rows stay chronological.
 
-Identical messages that appear in multiple session files (resume / fork) are counted once, so cost stays accurate. As a side effect, the session count can be lower than the Claude Code Analytics for Teams dashboard's session count when sessions have been resumed.
+Identical messages that appear in multiple session files (resume / fork) are counted once, so cost stays accurate. Where copies of the same message disagree on token counts — a streaming-intermediate copy can carry partial `output_tokens` while the completed copy carries the full, billed count — the most-complete copy (max total tokens) is kept, so output isn't under-counted. As a side effect, the session count can be lower than the Claude Code Analytics for Teams dashboard's session count when sessions have been resumed.
 
 ### Output
 
@@ -85,6 +85,14 @@ Identical messages that appear in multiple session files (resume / fork) are cou
 Pricing comes from [BerriAI/litellm's `model_prices_and_context_window.json`](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) — the same source `ccusage` uses. Anthropic does not publish a JSON pricing API, and LiteLLM's data tracks input / output / cache-write / cache-read rates per model.
 
 Cached at `~/.cache/tokens/pricing.json` for 7 days. If a refresh fails, the stale cache is reused.
+
+### Cache-write TTL
+
+Anthropic charges two different rates for prompt-cache *writes*: `1.25×` the base input rate for the 5-minute TTL and `2×` for the 1-hour TTL. LiteLLM only publishes the 5-minute rate. Claude Code writes a large share of its cache with the 1-hour TTL, so pricing every cache write at the 5-minute rate materially under-reports cost (in practice the bulk of a ~20% gap against the Claude Code Analytics dashboard).
+
+To correct for this, the parser reads the per-TTL split from each log line's `usage.cache_creation` (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`) and charges the 1-hour bucket at `2×` the base input rate, with the remainder at LiteLLM's 5-minute rate. The `Cache Wr` column still shows the combined token count. Logs predating the per-TTL breakdown fall back to the 5-minute rate for the whole amount.
+
+> Some residual gap against the dashboard is still expected: it aggregates usage across every machine and surface on your account, whereas this tool only sees the session logs in the local `~/.claude/projects/`.
 
 ## Examples
 

@@ -99,12 +99,18 @@ export const findPricing = (model: string, table: Record<string, ModelPricing>):
 
 export const computeCost = (
     p: ModelPricing,
-    tokens: { input: number; output: number; cacheWrite: number; cacheRead: number }
+    tokens: { input: number; output: number; cacheWrite: number; cacheWrite1h?: number; cacheRead: number }
 ): number => {
+    // `cacheWrite` is the total cache-creation tokens; `cacheWrite1h` is the 1-hour-TTL
+    // subset. LiteLLM only publishes the 5-minute write rate (p.cacheWrite, 1.25x input),
+    // so charge the 1-hour subset at Anthropic's 2x-input rate and the rest at the 5m rate.
+    const cacheWrite1h = tokens.cacheWrite1h ?? 0
+    const cacheWrite5m = Math.max(0, tokens.cacheWrite - cacheWrite1h)
     return (
         tokens.input * p.input +
         tokens.output * p.output +
-        tokens.cacheWrite * p.cacheWrite +
+        cacheWrite5m * p.cacheWrite +
+        cacheWrite1h * (p.input * 2) +
         tokens.cacheRead * p.cacheRead
     )
 }
