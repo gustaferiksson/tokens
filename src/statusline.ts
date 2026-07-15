@@ -13,6 +13,9 @@ type RateLimitWindow = {
 type StatuslineInput = {
     cwd?: string
     workspace?: { current_dir?: string }
+    // Path to the current session's JSONL transcript. Used for the context-window
+    // counter — the most recent assistant usage entry reflects what's live in context.
+    transcript_path?: string
     // Pro/Max subscribers: present after the first API response in the session.
     // API users or first render before any response: absent — fall back to the
     // historical-block heuristic.
@@ -223,6 +226,39 @@ const getHistoricalMaxBlockTokens = async (now: number): Promise<number> => {
     return max
 }
 
+// Current context-window occupancy = the last assistant usage entry's full
+// prompt (all input, cached and uncached) plus its output — the tokens that
+// will be resent on the next turn. Unlike the rate-limit math, cache reads are
+// included here because they still occupy the context window.
+const getContextTokens = async (transcriptPath?: string): Promise<number | undefined> => {
+    if (!transcriptPath) return undefined
+    const text = await Bun.file(transcriptPath)
+        .text()
+        .catch(() => "")
+    if (!text) return undefined
+    const lines = text.split("\n")
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]
+        if (!line || !line.includes('"usage"')) continue
+        let obj: RawLine
+        try {
+            obj = JSON.parse(line) as RawLine
+        } catch {
+            continue
+        }
+        const payload: AssistantPayload = obj.data?.message?.message ? obj.data.message : obj
+        const u = payload.message?.usage
+        if (!u) continue
+        return (
+            (u.input_tokens ?? 0) +
+            (u.output_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0) +
+            (u.cache_read_input_tokens ?? 0)
+        )
+    }
+    return undefined
+}
+
 type GitInfo = {
     repo: string
     subpath: string
@@ -331,8 +367,9 @@ const main = async (): Promise<void> => {
     const needLocalScan = ccPct === undefined
     const activeP = needLocalScan ? findActiveBlock(now) : Promise.resolve(undefined)
     const maxP = needLocalScan ? getHistoricalMaxBlockTokens(now) : Promise.resolve(0)
+    const contextP = getContextTokens(input.transcript_path)
     const git = tryGit(cwd)
-    const [active, historicalMax] = await Promise.all([activeP, maxP])
+    const [active, historicalMax, contextTokens] = await Promise.all([activeP, maxP, contextP])
 
     const repoName = git?.repo ?? (basename(cwd) || homeRel(cwd))
     let header = cyan(repoName)
@@ -348,6 +385,10 @@ const main = async (): Promise<void> => {
         if (git.modified > 0) flags.push(yellow(`~${git.modified}`))
         if (git.untracked > 0) flags.push(dim(`?${git.untracked}`))
         parts.push(flags.length ? `${git.branch}${dim(" : ")}${flags.join(" ")}` : git.branch)
+    }
+
+    if (contextTokens !== undefined) {
+        parts.push(`${dim("ctx")} ${cyan(fmtTokens(contextTokens))}`)
     }
 
     if (ccPct !== undefined) {
