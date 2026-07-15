@@ -387,9 +387,7 @@ const main = async (): Promise<void> => {
         parts.push(flags.length ? `${git.branch}${dim(" : ")}${flags.join(" ")}` : git.branch)
     }
 
-    if (contextTokens !== undefined) {
-        parts.push(`${dim("ctx")} ${cyan(fmtTokens(contextTokens))}`)
-    }
+    parts.push(`${dim("ctx")} ${contextTokens === undefined ? dim("—") : cyan(fmtTokens(contextTokens))}`)
 
     if (ccPct !== undefined) {
         // Known issue (anthropics/claude-code#31820): the upstream % can briefly
