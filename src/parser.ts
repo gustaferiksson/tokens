@@ -154,7 +154,7 @@ const parseLine = (line: string, project: string): ParsedLine | undefined => {
 
 const totalTokens = (r: UsageRecord): number => r.input + r.output + r.cacheWrite + r.cacheRead
 
-const walkJsonl = async (dir: string): Promise<string[]> => {
+export const walkJsonl = async (dir: string): Promise<string[]> => {
     const out: string[] = []
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const entry of entries) {

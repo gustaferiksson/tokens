@@ -1,6 +1,6 @@
 # tokens
 
-CLI tool that breaks down [Claude Code](https://claude.com/claude-code) usage from local session logs (`~/.claude/projects/`) by date, project, and model — with cost computed from live Anthropic pricing.
+CLI tool that breaks down [Claude Code](https://claude.com/claude-code) usage from local session logs (`~/.claude/projects/`) by date, project, and model — with cost computed from live Anthropic pricing. `--activity` reports the other side of the same logs: sessions run, lines written, commits made.
 
 ## Install
 
@@ -67,16 +67,54 @@ tokens [options]
 | `--by-model [filter]` | adds a `Model` column; optional substring filter |
 | `--detailed` | one per (date, project, model) |
 | `--blocks` | one per Anthropic 5h session block; the active block is highlighted and its duration shows `(active)` |
+| `--activity` | swaps tokens and cost for sessions, edits, lines and commits — see [Activity](#activity) |
 
 Project and session rows sort by total cost (descending). Date rows stay chronological.
 
 Identical messages that appear in multiple session files (resume / fork) are counted once, so cost stays accurate. Where copies of the same message disagree on token counts — a streaming-intermediate copy can carry partial `output_tokens` while the completed copy carries the full, billed count — the most-complete copy (max total tokens) is kept, so output isn't under-counted. As a side effect, the session count can be lower than the Claude Code Analytics for Teams dashboard's session count when sessions have been resumed.
 
+### Activity
+
+`--activity` answers "what did Claude do?" rather than "what did it cost?". It swaps the token and cost columns for `Sessions`, `Edits`, `Lines +`, `Lines -` and `Commits`, and honors the same date range, `--project` / `--session` grouping, and filters. It reads no pricing, so it never touches the network.
+
+```
+$ tokens --activity --project
+
+┌──────────┬──────────┬───────┬─────────┬─────────┬─────────┐
+│ Project  │ Sessions │ Edits │ Lines + │ Lines - │ Commits │
+├──────────┼──────────┼───────┼─────────┼─────────┼─────────┤
+│ plug-hub │       60 │ 1,960 │  48,186 │  11,034 │     227 │
+│ tine     │       20 │ 1,807 │  23,568 │  10,309 │     196 │
+└──────────┴──────────┴───────┴─────────┴─────────┴─────────┘
+```
+
+How each number is derived, and what it does *not* mean:
+
+| column | derived from | caveats |
+| --- | --- | --- |
+| `Sessions` | distinct `sessionId` | A resumed session and its sub-agents share the parent's `sessionId`, so they stay one session — unlike the file count in `~/.claude/projects/`, which is several times higher. A session spanning midnight appears on both dates, but the `TOTAL` row counts it once (it unions the IDs rather than summing the rows). |
+| `Edits` / `Lines +` / `Lines -` | successful `Edit`, `Write` and `NotebookEdit` tool calls | `Write` counts its whole `content` as added; `Edit` counts `new_string` as added and `old_string` as removed. **Files written by shell are not counted** — heredocs, `sed`, code generators, package managers. So this measures what Claude typed through the edit tools, not how much your repo grew: for one repo here it read 23.5K lines against 80K `git log` additions. Paths under `/tmp` or `/var/folders` are excluded as scratch. A `replace_all` edit counts its replacement once, not per occurrence. |
+| `Commits` | successful shell `git commit` calls | One per command, so the rare command chaining two commits counts once. `--amend` and `--dry-run` invocations are skipped, since neither adds a commit. A commit inside a failed chain (`git commit && git push` where the push fails) is missed, because the tool result is an error. Spot-checking a sample of matches plus every command the heuristic flagged as suspicious (a `git commit` string preceded by `echo`, `grep` or `printf`) found 1–2 false positives in 594. |
+
+All three come from the local logs only, so pruned or machine-local logs undercount — the same limitation as the cost figures.
+
+#### Comparing with the Claude Code analytics dashboard
+
+The numbers here will not equal the [analytics dashboard](https://code.claude.com/docs/en/analytics), because the definitions differ. Ranked by how much they matter:
+
+- **Lines is one combined figure there, two columns here.** The dashboard's `Lines this month` / `Lines of code accepted` comes from `claude_code.lines_of_code.count`, documented as "count of lines of code modified" with a `type` of `added` or `removed`. The dashboard reports a single number spanning both, so compare it against `Lines +` **plus** `Lines -`, not against `Lines +` alone.
+- **The dashboard sees your whole account, this tool sees one machine.** It aggregates every surface you authenticate from — other machines, the web app, cloud sessions — while this reads only the local `~/.claude/projects/`. Expect the dashboard to be higher.
+- **Commits are counted from opposite ends.** Claude Code increments `claude_code.commit.count` itself "when creating git commits"; this tool infers commits from the shell commands in the log. The two therefore disagree on `--amend` (skipped here) and on a commit inside a chain that later fails, e.g. `git commit && git push` where the push fails (counted there, dropped here because the tool result is an error).
+- **Rejected suggestions are excluded on both sides.** The dashboard excludes them by definition; here a rejected edit's tool result is an error, which is already filtered out.
+- **Dates are UTC.** Every log timestamp ends in `Z` and is bucketed as-is, so a late-evening session east of UTC lands on the next day.
+
+One dashboard metric is *not* comparable at all: the Teams/Enterprise contribution metric `Lines of code with CC` counts only merged-PR lines that survive a much stricter filter — "effective lines" over 3 characters, no empty or bracket-only lines, and no lock files, generated code, `dist/`, `build/` or test fixtures. Anthropic calls it a deliberate underestimate. It will be far below the `Lines +` here.
+
 ### Output
 
 | flag | behavior |
 | --- | --- |
-| `--exact` | exact integer token counts (default: compact `1.2K` / `3.4M`) |
+| `--exact` | exact integer token counts (default: compact `1.2K` / `3.4M`); in `--activity` also shows full session UUIDs |
 | `--json` | emit JSON instead of a table |
 | `--refresh-pricing` | force refresh of the pricing cache (TTL 7d) |
 
@@ -110,6 +148,9 @@ tokens --detailed --month        # full (date, project, model) for this month
 tokens --json --month            # JSON output
 tokens --blocks --today          # today's 5h session blocks
 tokens --blocks --week -1        # last week's blocks
+tokens --activity --month        # sessions, lines and commits this month
+tokens --activity --project      # all-time activity per project
+tokens --activity --session      # per-session activity, biggest writes first
 ```
 
 ## Statusline

@@ -1,5 +1,6 @@
 #! /usr/bin/env bun
 
+import { type ActivityRecord, collectActivity } from "./activity"
 import { type Block, identifyBlocks, isActiveBlock } from "./blocks"
 import { installSpecs } from "./install-specs"
 import { collectUsage, projectLabel, type UsageRecord } from "./parser"
@@ -13,6 +14,7 @@ type Args = {
     bySession: boolean
     byModel: boolean
     byBlock: boolean
+    activity: boolean
     detailed: boolean
     modelFilter?: string
     projectFilter?: string
@@ -46,6 +48,22 @@ GROUPING
   --detailed            One row per (date, project, model)
   --blocks              One row per Anthropic 5h session block
 
+ACTIVITY
+  --activity            Show what Claude did instead of what it cost:
+                        sessions, edits, lines added/removed, commits.
+                        Honors --project / --session grouping and filters.
+
+                        Sessions  distinct session ID; a resumed session and its
+                                  sub-agents stay one session.
+                        Lines     from successful Edit / Write / NotebookEdit
+                                  calls only. Files written by shell (heredoc,
+                                  generators, package managers) are not counted,
+                                  so this is Claude's typed output, not your
+                                  repo's growth. Temp paths are excluded.
+                        Commits   successful shell 'git commit' calls, counting
+                                  one per command and skipping --amend/--dry-run.
+                        All three read local logs, so pruned logs undercount.
+
 OUTPUT
   --exact               Show exact integer token counts (default: compact 1.2K)
   --json                Emit JSON instead of a table
@@ -61,6 +79,7 @@ const parseArgs = (argv: string[]): Args => {
         bySession: false,
         byModel: false,
         byBlock: false,
+        activity: false,
         detailed: false,
         json: false,
         exact: false,
@@ -137,6 +156,9 @@ const parseArgs = (argv: string[]): Args => {
                 break
             case "--blocks":
                 out.byBlock = true
+                break
+            case "--activity":
+                out.activity = true
                 break
             case "--json":
                 out.json = true
@@ -425,6 +447,157 @@ const renderTextTable = (
     return `${rangeLine}\n${pricingLine}\n${renderTable(allRows, columns)}${footer}`
 }
 
+type ActivityAgg = {
+    date?: string
+    project?: string
+    session?: string
+    sessionStart?: string
+    sessionProject?: string
+    sessions: Set<string>
+    edits: number
+    linesAdded: number
+    linesRemoved: number
+    commits: number
+}
+
+type ActivityResult = { rows: ActivityAgg[]; minDate?: string; maxDate?: string }
+
+const aggregateActivity = (
+    records: ActivityRecord[],
+    axes: GroupAxes,
+    range: DateRange,
+    projectFilter?: string,
+    sessionFilter?: string
+): ActivityResult => {
+    const buckets = new Map<string, ActivityAgg>()
+    let minDate: string | undefined
+    let maxDate: string | undefined
+
+    for (const r of records) {
+        if (!inRange(r.date, range)) continue
+        if (projectFilter && !projectLabel(r.project).includes(projectFilter)) continue
+        if (sessionFilter && !r.sessionId.includes(sessionFilter)) continue
+
+        if (minDate === undefined || r.date < minDate) minDate = r.date
+        if (maxDate === undefined || r.date > maxDate) maxDate = r.date
+
+        const projectKey = axes.project ? projectLabel(r.project) : ""
+        const sessionKey = axes.session ? r.sessionId : ""
+        const key = `${axes.date ? r.date : ""}|${projectKey}|${sessionKey}`
+
+        let bucket = buckets.get(key)
+        if (!bucket) {
+            bucket = {
+                date: axes.date ? r.date : undefined,
+                project: axes.project ? r.project : undefined,
+                session: axes.session ? r.sessionId : undefined,
+                sessionStart: axes.session ? r.timestamp : undefined,
+                sessionProject: axes.session ? projectLabel(r.project) : undefined,
+                sessions: new Set(),
+                edits: 0,
+                linesAdded: 0,
+                linesRemoved: 0,
+                commits: 0,
+            }
+            buckets.set(key, bucket)
+        } else if (axes.session && bucket.sessionStart && r.timestamp < bucket.sessionStart) {
+            bucket.sessionStart = r.timestamp
+        }
+
+        bucket.sessions.add(r.sessionId)
+        bucket.edits += r.edits
+        bucket.linesAdded += r.linesAdded
+        bucket.linesRemoved += r.linesRemoved
+        bucket.commits += r.commits
+    }
+
+    const rows = [...buckets.values()]
+    const projectTotals = new Map<string, number>()
+    for (const r of rows) projectTotals.set(r.project ?? "", (projectTotals.get(r.project ?? "") ?? 0) + r.linesAdded)
+
+    rows.sort((a, b) => {
+        if (axes.date) {
+            const d = (a.date ?? "").localeCompare(b.date ?? "")
+            if (d !== 0) return d
+        }
+        if (axes.session) {
+            if (a.linesAdded !== b.linesAdded) return b.linesAdded - a.linesAdded
+            return (a.sessionStart ?? "").localeCompare(b.sessionStart ?? "")
+        }
+        if (axes.project) {
+            const diff = (projectTotals.get(b.project ?? "") ?? 0) - (projectTotals.get(a.project ?? "") ?? 0)
+            if (diff !== 0) return diff
+            return (a.project ?? "").localeCompare(b.project ?? "")
+        }
+        return 0
+    })
+    return { rows, minDate, maxDate }
+}
+
+const ACTIVITY_NOTE = "Lines: Edit/Write calls only (shell-written files excluded). Commits: shell `git commit`."
+
+const renderActivityTable = (
+    rows: ActivityAgg[],
+    axes: GroupAxes,
+    range: DateRange,
+    bounds: { minDate?: string; maxDate?: string },
+    exact: boolean
+): string => {
+    if (rows.length === 0) return `No activity in range: ${range.label}`
+
+    const totals: ActivityAgg = {
+        sessions: new Set(),
+        edits: 0,
+        linesAdded: 0,
+        linesRemoved: 0,
+        commits: 0,
+    }
+    for (const r of rows) {
+        for (const s of r.sessions) totals.sessions.add(s)
+        totals.edits += r.edits
+        totals.linesAdded += r.linesAdded
+        totals.linesRemoved += r.linesRemoved
+        totals.commits += r.commits
+    }
+
+    const columns: Column<ActivityAgg>[] = []
+    if (axes.date) columns.push({ header: "Date", get: (r) => r.date ?? "" })
+    if (axes.project) columns.push({ header: "Project", get: (r) => projectLabel(r.project ?? "") })
+    if (axes.session) {
+        columns.push({ header: "Started", get: (r) => (r.sessionStart ? fmtSessionStart(r.sessionStart) : "") })
+        columns.push({ header: "Project", get: (r) => r.sessionProject ?? "" })
+        columns.push({
+            header: "Session",
+            get: (r) => {
+                const s = r.session ?? ""
+                if (s === "TOTAL") return `TOTAL (${totals.sessions.size})`
+                return exact ? s : s.slice(0, 8)
+            },
+        })
+    } else {
+        columns.push({ header: "Sessions", align: "right", get: (r) => fmtInt(r.sessions.size) })
+    }
+    columns.push({ header: "Edits", align: "right", get: (r) => fmtInt(r.edits) })
+    columns.push({ header: "Lines +", align: "right", get: (r) => fmtInt(r.linesAdded) })
+    columns.push({ header: "Lines -", align: "right", get: (r) => fmtInt(r.linesRemoved) })
+    columns.push({ header: "Commits", align: "right", get: (r) => fmtInt(r.commits) })
+
+    const totalsRow: ActivityAgg = {
+        ...totals,
+        date: axes.date ? "TOTAL" : undefined,
+        project: axes.project && !axes.date ? "TOTAL" : undefined,
+        session: axes.session ? "TOTAL" : undefined,
+    }
+
+    const allRows: Row<ActivityAgg>[] = [...rows, "separator", { highlight: totalsRow }]
+    const from = range.from ?? bounds.minDate
+    const to = range.to ?? bounds.maxDate
+    const isoStr = from && to ? (from === to ? from : `${from} → ${to}`) : (from ?? to)
+    const rangeLine = `Range: ${range.label}${isoStr ? `  ${gray(`(${isoStr})`)}` : ""}`
+
+    return `${rangeLine}\n${gray(ACTIVITY_NOTE)}\n${renderTable(allRows, columns)}`
+}
+
 type BlockAgg = {
     start: Date
     end: Date
@@ -611,6 +784,57 @@ const main = async (): Promise<void> => {
     } catch (err) {
         console.error(`error: ${(err as Error).message}`)
         process.exit(2)
+    }
+
+    if (args.activity) {
+        if (args.byBlock) {
+            console.error("error: --activity cannot combine with --blocks")
+            process.exit(2)
+        }
+        // Activity has no billing dimension, so skip both pricing and the usage pass.
+        const axes = { ...axesFromArgs(args), model: false }
+        const result = aggregateActivity(await collectActivity(), axes, range, args.projectFilter, args.sessionFilter)
+
+        if (args.json) {
+            const serialized = result.rows.map((r) => ({
+                date: r.date,
+                project: r.project ? projectLabel(r.project) : undefined,
+                session: r.session,
+                sessionStart: r.sessionStart,
+                sessions: r.sessions.size,
+                edits: r.edits,
+                linesAdded: r.linesAdded,
+                linesRemoved: r.linesRemoved,
+                commits: r.commits,
+            }))
+            const sessions = new Set(result.rows.flatMap((r) => [...r.sessions])).size
+            console.log(
+                JSON.stringify(
+                    {
+                        range,
+                        minDate: result.minDate,
+                        maxDate: result.maxDate,
+                        note: ACTIVITY_NOTE,
+                        sessions,
+                        rows: serialized,
+                    },
+                    null,
+                    2
+                )
+            )
+            return
+        }
+
+        console.log(
+            renderActivityTable(
+                result.rows,
+                axes,
+                range,
+                { minDate: result.minDate, maxDate: result.maxDate },
+                args.exact
+            )
+        )
+        return
     }
 
     const [pricing, records] = await Promise.all([loadPricing(args.refreshPricing), collectUsage()])
