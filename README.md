@@ -29,7 +29,7 @@ bun install
 bun link
 ```
 
-Optional Fig autocomplete spec:
+Optional shell autocomplete spec (Amazon Q / Fig-format, installed to `~/.q/specs`):
 
 ```bash
 bunx @gustaferiksson/tokens install-specs   # one-shot, no install needed

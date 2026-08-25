@@ -41,7 +41,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check . --write",
     "check": "tsc --noEmit && bun run lint",
-    "install:specs": "bun build src/specs/*.ts --outdir ~/.fig/autocomplete/build --minify --format esm",
+    "install:specs": "bun build src/specs/*.ts --outdir ~/.q/specs --minify --format esm",
     "build": "bun build src/index.ts --target bun --outdir ./out",
     "prepublishOnly": "bun run check"
   },

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 export const installSpecs = async (): Promise<void> => {
     const here = fileURLToPath(new URL(".", import.meta.url))
     const entry = join(here, "specs", "tokens.ts")
-    const outDir = join(homedir(), ".fig", "autocomplete", "build")
+    const outDir = join(homedir(), ".q", "specs")
 
     const proc = Bun.spawn(["bun", "build", entry, "--outdir", outDir, "--minify", "--format", "esm"], {
         stdout: "inherit",
@@ -16,5 +16,5 @@ export const installSpecs = async (): Promise<void> => {
         process.stderr.write(`tokens: spec build failed (exit ${exitCode})\n`)
         process.exit(exitCode)
     }
-    console.log(`Installed Fig autocomplete spec to ${outDir}`)
+    console.log(`Installed autocomplete spec to ${outDir}`)
 }

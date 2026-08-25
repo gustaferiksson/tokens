@@ -29,7 +29,7 @@ const HELP = `tokens — Claude Code usage breakdown
 
 USAGE
   tokens [options]
-  tokens install-specs   Build & install Fig autocomplete spec to ~/.fig/autocomplete/build
+  tokens install-specs   Build & install the shell autocomplete spec to ~/.q/specs
 
 RANGE (mutually exclusive, default: all time)
   --last <N>            Last N days (inclusive)
