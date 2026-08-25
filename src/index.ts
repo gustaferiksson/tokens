@@ -534,7 +534,8 @@ const aggregateActivity = (
     return { rows, minDate, maxDate }
 }
 
-const ACTIVITY_NOTE = "Lines: Edit/Write calls only (shell-written files excluded). Commits: shell `git commit`."
+const ACTIVITY_NOTE =
+    "Lines: recorded Edit/Write diffs only (shell-written files excluded). Commits: shell `git commit`."
 
 const renderActivityTable = (
     rows: ActivityAgg[],

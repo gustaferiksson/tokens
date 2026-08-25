@@ -17,10 +17,13 @@ type ToolUse = { type?: string; id?: string; name?: string; input?: Record<strin
 type ToolResult = { type?: string; tool_use_id?: string; is_error?: boolean | null }
 type ContentBlock = ToolUse & ToolResult
 
+type ToolUseResult = { structuredPatch?: { lines?: string[] }[]; originalFile?: string }
+
 type RawLine = {
     timestamp?: string
     sessionId?: string
     message?: { content?: ContentBlock[] }
+    toolUseResult?: ToolUseResult
 }
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"])
@@ -40,9 +43,29 @@ const countLines = (value: unknown): number => {
     return body.split("\n").length
 }
 
+type Delta = { added: number; removed: number }
+
 type Pending = { bucket: ActivityRecord; edits: number; linesAdded: number; linesRemoved: number; commits: number }
 
-const editDelta = (tool: ToolUse): { added: number; removed: number } | undefined => {
+// The diff Claude Code recorded for the accepted edit, so unchanged context lines never count.
+// No hunks and no original file means a newly created file, whose size only the call itself knows.
+const patchDelta = (result: ToolUseResult | undefined): Delta | undefined => {
+    const hunks = result?.structuredPatch
+    if (!Array.isArray(hunks)) return undefined
+    if (hunks.length === 0) return result?.originalFile === undefined ? undefined : { added: 0, removed: 0 }
+    let added = 0
+    let removed = 0
+    for (const hunk of hunks) {
+        for (const line of hunk.lines ?? []) {
+            if (line.startsWith("+")) added += 1
+            else if (line.startsWith("-")) removed += 1
+        }
+    }
+    return { added, removed }
+}
+
+// Fallback for a call whose result carries no diff: a new file, or a notebook edit.
+const editDelta = (tool: ToolUse): Delta | undefined => {
     const path = tool.input?.file_path
     if (typeof path !== "string" || TEMP_PATH.test(path)) return undefined
     if (tool.name === "Write") return { added: countLines(tool.input?.content), removed: 0 }
@@ -59,6 +82,7 @@ export const collectActivity = async (): Promise<ActivityRecord[]> => {
     // call → outcome join has to happen globally, once every file is read.
     const pending = new Map<string, Pending>()
     const errored = new Map<string, boolean>()
+    const patches = new Map<string, Delta>()
 
     const bucketFor = (project: string, sessionId: string, timestamp: string): ActivityRecord => {
         const date = timestamp.slice(0, 10)
@@ -104,6 +128,8 @@ export const collectActivity = async (): Promise<ActivityRecord[]> => {
                     if (block.type === "tool_result" && block.tool_use_id) {
                         const seen = errored.get(block.tool_use_id)
                         errored.set(block.tool_use_id, seen === false ? false : block.is_error === true)
+                        const delta = patchDelta(obj.toolUseResult)
+                        if (delta) patches.set(block.tool_use_id, delta)
                         continue
                     }
                     if (block.type !== "tool_use" || !block.id) continue
@@ -133,9 +159,10 @@ export const collectActivity = async (): Promise<ActivityRecord[]> => {
     // never completed, so it is dropped too.
     for (const [id, p] of pending) {
         if (errored.get(id) !== false) continue
+        const delta = patches.get(id)
         p.bucket.edits += p.edits
-        p.bucket.linesAdded += p.linesAdded
-        p.bucket.linesRemoved += p.linesRemoved
+        p.bucket.linesAdded += delta?.added ?? p.linesAdded
+        p.bucket.linesRemoved += delta?.removed ?? p.linesRemoved
         p.bucket.commits += p.commits
     }
 
